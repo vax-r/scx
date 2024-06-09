@@ -391,7 +391,7 @@ static u64 dom_min_vruntime(struct dom_ctx *domc)
 	 *
 	 * XXX: Once those macros are added, update this access.
 	 */
-	return domc->min_vruntime;
+	return READ_ONCE(domc->min_vruntime);
 }
 
 static void dom_xfer_task(struct task_struct *p, struct task_ctx *taskc,
@@ -1283,8 +1283,8 @@ static void running_update_vtime(struct task_struct *p,
 		return;
 
 	bpf_spin_lock(&lockw->lock);
-	if (vtime_before(domc->min_vruntime, p->scx.dsq_vtime))
-		domc->min_vruntime = p->scx.dsq_vtime;
+	if (vtime_before(dom_min_vruntime(domc), p->scx.dsq_vtime))
+		WRITE_ONCE(domc->min_vruntime, p->scx.dsq_vtime);
 	bpf_spin_unlock(&lockw->lock);
 }
 
