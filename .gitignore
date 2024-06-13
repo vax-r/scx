@@ -1,3 +1,4 @@
 libbpf/
 *.gitignore
 PKGBUILD
+scheds/rust/scx_rusty/src/model_dir/model_path

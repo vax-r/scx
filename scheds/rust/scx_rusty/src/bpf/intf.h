@@ -124,6 +124,13 @@ struct task_ctx {
 	bool dispatch_local;
 
 	struct ravg_data dcyc_rd;
+
+	/* Machine Learning inference needed data */
+	unsigned long src_dom_load;
+	unsigned long dst_dom_load;
+	int cpu_idle;
+	int cpu_not_idle;
+	int cpu;
 };
 
 struct bucket_ctx {

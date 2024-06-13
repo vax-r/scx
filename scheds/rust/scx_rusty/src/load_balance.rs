@@ -152,6 +152,52 @@ use scx_utils::LoadAggregator;
 use sorted_vec::SortedVec;
 use std::collections::VecDeque;
 
+extern crate tensorflow;
+
+use tensorflow::Graph;
+use tensorflow::Session;
+use tensorflow::SessionOptions;
+use tensorflow::SessionRunArgs;
+use tensorflow::Tensor;
+use std::error::Error;
+
+struct TensorFlowModel {
+    graph: Graph,
+    session: Session,
+}
+
+impl TensorFlowModel {
+    fn new(model_dir: &str) -> Result<Self, Box<dyn Error>> {
+        let mut graph = Graph::new();
+        let bundle = tensorflow::SavedModelBundle::load(
+            &SessionOptions::new(),
+            &["serve"],
+            &mut graph,
+            model_dir,
+        )?;
+        let session = bundle.session;
+        
+        Ok(TensorFlowModel { graph, session })
+    }
+
+    fn predict(&self, input_data: Vec<f64>) -> Result<bool, Box<dyn Error>> {
+        let input_tensor = Tensor::new(&[input_data.len() as u64]).with_values(&input_data)?;
+
+        let input_op = self.graph.operation_by_name_required("serving_default_input")?;
+        let output_op = self.graph.operation_by_name_required("StatefulPartitionedCall")?;
+
+        let mut args = SessionRunArgs::new();
+        args.add_feed(&input_op, 0, &input_tensor);
+        let output_token = args.request_fetch(&output_op, 0);
+
+        self.session.run(&mut args)?;
+
+        let output_tensor: Tensor<f64> = args.fetch(output_token).unwrap();
+        let output_value = output_tensor[0];
+        Ok(output_value == 1.0)
+    }
+}
+
 const RAVG_FRAC_BITS: u32 = bpf_intf::ravg_consts_RAVG_FRAC_BITS;
 
 fn now_monotonic() -> u64 {
@@ -322,6 +368,9 @@ struct TaskInfo {
     dom_mask: u64,
     migrated: Cell<bool>,
     is_kworker: bool,
+    cpu: i32,
+    cpu_idle: i32,
+    cpu_not_idle: i32,
 }
 
 impl LoadOrdered for TaskInfo {
@@ -509,6 +558,8 @@ pub struct LoadBalancer<'a, 'b> {
 
     lb_apply_weight: bool,
     balance_load: bool,
+
+    inference_model: TensorFlowModel,
 }
 
 // Verify that the number of buckets is a factor of the maximum weight to
@@ -535,6 +586,8 @@ impl<'a, 'b> LoadBalancer<'a, 'b> {
             balance_load,
 
             dom_group,
+
+            inference_model: TensorFlowModel::new("/home/vax-r/scx/scheds/rust/scx_rusty/src/model_dir/model_path").unwrap(),
         }
     }
 
@@ -713,7 +766,7 @@ impl<'a, 'b> LoadBalancer<'a, 'b> {
                 if task_ctx.dom_id as usize != dom.id {
                     continue;
                 }
-
+                
                 let rd = &task_ctx.dcyc_rd;
                 let mut load = ravg_read(
                         rd.val,
@@ -737,12 +790,20 @@ impl<'a, 'b> LoadBalancer<'a, 'b> {
                         dom_mask: task_ctx.dom_mask,
                         migrated: Cell::new(false),
                         is_kworker: task_ctx.is_kworker,
+                        cpu: task_ctx.cpu,
+                        cpu_idle: task_ctx.cpu_idle,
+                        cpu_not_idle: task_ctx.cpu_not_idle,
                     },
                 );
             }
         }
 
         Ok(())
+    }
+
+    fn migrate_inference(&self, cpu: &i32, cpu_idle: &i32, cpu_not_idle: &i32, src_dom_load: &f64, dst_dom_load: &f64) -> bool {
+        let input_vec = vec![f64::from(*cpu), f64::from(*cpu_idle), f64::from(*cpu_not_idle), *src_dom_load, *dst_dom_load];
+        self.inference_model.predict(input_vec).unwrap()
     }
 
     // Find the first candidate pid which hasn't already been migrated and
@@ -832,9 +893,12 @@ impl<'a, 'b> LoadBalancer<'a, 'b> {
             return Ok(None);
         }
 
+        let push_load = push_dom.load.load_avg();
+        let pull_load = pull_dom.load.load_avg();
         let load = *(task.load);
         let pid = task.pid;
-        task.migrated.set(true);
+        let migrate_or_not = self.migrate_inference(&task.cpu, &task.cpu_idle, &task.cpu_not_idle, &push_load, &pull_load);
+        task.migrated.set(migrate_or_not);
         std::mem::swap(&mut push_dom.tasks, &mut SortedVec::from_unsorted(tasks));
 
         push_dom.transfer_load(load, pid, pull_dom, &mut self.skel);

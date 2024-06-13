@@ -1494,6 +1494,9 @@ s32 BPF_STRUCT_OPS(rusty_init_task, struct task_struct *p,
 		.dom_active_pids_gen = -1,
 		.last_blocked_at = now,
 		.last_woke_at = now,
+		.cpu = bpf_get_smp_processor_id(),
+		.cpu_idle = 1,
+		.cpu_not_idle = 0,
 
 	};
 	struct task_ctx *map_value;

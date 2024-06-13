@@ -24,6 +24,7 @@ use std::time::Instant;
 
 #[macro_use]
 extern crate static_assertions;
+extern crate tensorflow;
 
 use ::fb_procfs as procfs;
 use anyhow::anyhow;
